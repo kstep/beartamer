@@ -21,3 +21,5 @@ Data structure:
 
 Run `cargo build -- 0.0.0.0:9000` to build.
 Run `cargo run -- 0.0.0.0:9000` to build and run.
+
+Install `openssl` library on Linux before build.
