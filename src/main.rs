@@ -17,60 +17,15 @@ use hyper::body::Body;
 use hyper::http::response::Builder;
 use hyper::service::{make_service_fn, Service, service_fn_ok};
 use log::{error, warn};
-use r2d2;
 use r2d2_mongodb::ConnectionOptions;
-use serde::Serialize;
 
-pub enum Never {}
+use crate::error::{Never, ErrorInfo};
+use crate::http::{empty_response, json_builder, json_ok};
+use crate::storage::{Secret, Storage};
 
-impl fmt::Display for Never {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
-}
-
-impl fmt::Debug for Never {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
-}
-
-impl Error for Never {}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Secret {
-    r#type: SecretType,
-    domain: String,
-    username: String,
-    password: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-enum SecretType {
-    Password
-}
-
-#[derive(Serialize)]
-struct ErrorInfo<'a> {
-    message: &'a str,
-}
-
-impl<'a> ErrorInfo<'a> {
-    fn new(message: &'a str) -> Self {
-        ErrorInfo { message }
-    }
-    fn json(&self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
-    fn body(&self) -> Body {
-        Body::from(self.json())
-    }
-    fn resp(&self, status: StatusCode) -> FutureResult<HttpResponse, Never> {
-        json(self, status)
-    }
-    fn resp_ok(&self) -> FutureResult<HttpResponse, Never> {
-        json_ok(self)
-    }
-}
-
-pub type HttpResponse = Response<Body>;
+mod http;
+mod error;
+mod storage;
 
 static DEFAULT_BIND: &str = "127.0.0.1:9000";
 static CONFIG_FILE: &str = "config.json";
@@ -83,31 +38,6 @@ pub struct DbConfig {
     username: Option<String>,
     password: Option<String>,
     pool_size: u32,
-}
-
-trait Storage: Send {
-    type Error: Error;
-    fn get(&self, domain: &str) -> Result<Option<Secret>, Self::Error>;
-    fn set(&self, secret: Secret) -> Result<(), Self::Error>;
-    fn delete(&self, domain: &str) -> Result<bool, Self::Error>;
-}
-
-impl Storage for Arc<RwLock<HashMap<String, Secret>>> {
-    type Error = Never;
-
-    fn get(&self, domain: &str) -> Result<Option<Secret>, Never> {
-        let lock = self.read().unwrap();
-        Ok(HashMap::get(&lock, domain).cloned())
-    }
-
-    fn set(&self, secret: Secret) -> Result<(), Never> {
-        HashMap::insert(&mut self.write().unwrap(), secret.domain.clone(), secret);
-        Ok(())
-    }
-
-    fn delete(&self, domain: &str) -> Result<bool, Self::Error> {
-        Ok(HashMap::remove(&mut self.write().unwrap(), domain).is_some())
-    }
 }
 
 fn main() {
@@ -128,7 +58,7 @@ fn main() {
     };
 
     let conn_mgr = r2d2_mongodb::MongodbConnectionManager::new({
-        let mut opts = ConnectionOptions::builder();
+        let mut opts = r2d2_mongodb::ConnectionOptions::builder();
         opts.with_host(&db_conf.host, db_conf.port)
             .with_db(&db_conf.dbname);
         if let (Some(username), Some(password)) = (db_conf.username, db_conf.password) {
@@ -151,24 +81,6 @@ fn main() {
         rt::spawn(server);
         Ok(())
     }));
-}
-
-fn json<T: ?Sized + Serialize>(value: &T, status: StatusCode) -> FutureResult<HttpResponse, Never> {
-    future::ok(Response::builder()
-        .header("Content-Type", "application/json")
-        .status(status)
-        .body(Body::from(serde_json::to_string(value).unwrap()))
-        .unwrap())
-}
-
-fn json_ok<T: ?Sized + Serialize>(value: &T) -> FutureResult<HttpResponse, Never> {
-    json(value, StatusCode::OK)
-}
-
-fn json_builder(status: StatusCode) -> Builder {
-    let mut builder = Response::builder();
-    builder.header("Content-Type", "application/json").status(status);
-    builder
 }
 
 pub struct SecretService<S> {
@@ -226,10 +138,7 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
                                         .resp(StatusCode::BAD_REQUEST),
                                 Ok(secret) => {
                                     match storage.set(secret) {
-                                        Ok(()) => future::ok(Response::builder()
-                                            .status(StatusCode::NO_CONTENT)
-                                            .body(Body::from(""))
-                                            .unwrap()),
+                                        Ok(()) => empty_response(),
                                         Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
                                             .resp(StatusCode::INTERNAL_SERVER_ERROR),
                                     }
@@ -241,8 +150,7 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
             }
             &Method::DELETE =>
                 Either::A(match self.storage.delete(&domain) {
-                    Ok(true) => future::ok(Response::builder().status(StatusCode::NO_CONTENT)
-                        .body(Body::from("")).unwrap()),
+                    Ok(true) => empty_response(),
                     Ok(false) => ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND),
                     Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
                         .resp(StatusCode::INTERNAL_SERVER_ERROR),
