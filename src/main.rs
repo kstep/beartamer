@@ -8,21 +8,24 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 
 use futures::{future, Future, Stream};
-use futures::future::{FutureResult, Either};
+use futures::future::{Either, FutureResult};
 use hyper::{Method, Request, Response, rt, Server, StatusCode};
 use hyper::body::Body;
 use hyper::http::response::Builder;
-use hyper::service::{Service, service_fn_ok, make_service_fn};
+use hyper::service::{make_service_fn, Service, service_fn_ok};
 use log::{error, warn};
 use serde::Serialize;
 
 pub enum Never {}
+
 impl fmt::Display for Never {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
 }
+
 impl fmt::Debug for Never {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
 }
+
 impl Error for Never {}
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -130,19 +133,26 @@ impl Service for SecretService {
                     password: "".to_string(),
                 })),
             &Method::PUT | &Method::POST => {
-                let body = req.into_body()
+                let resp = req.into_body()
+                    .map_err(|err| {
+                        panic!("Error processing request: {}", err);
+                    })
                     .concat2()
-                    .map(|c| {
+                    .and_then(|c| {
                         match String::from_utf8(c.to_vec()) {
-                            Err(err) => ErrorInfo::new(&format!("invalid data: {}", err)).json(),
+                            Err(err) =>
+                                ErrorInfo::new(&format!("invalid data: {}", err))
+                                    .resp(StatusCode::BAD_REQUEST),
                             Ok(s) => match serde_json::from_str::<Secret>(&s) {
-                                Err(err) => ErrorInfo::new(&format!("invalid json: {}", err)).json(),
-                                Ok(s) => serde_json::to_string(&s).unwrap(),
+                                Err(err) =>
+                                    ErrorInfo::new(&format!("invalid json: {}", err))
+                                        .resp(StatusCode::BAD_REQUEST),
+                                Ok(s) => json_ok(&s),
                             }
                         }
-                    }).into_stream();
-                Either::A(future::ok(Response::new(Body::wrap_stream(body))))
-            },
+                    });
+                Either::B(Box::new(resp))
+            }
             &Method::DELETE =>
                 Either::A(ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND)),
             // json_ok(&ErrorInfo { message: "Domain deleted" }),
