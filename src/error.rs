@@ -40,3 +40,4 @@ impl<'a> ErrorInfo<'a> {
         json_ok(self)
     }
 }
+

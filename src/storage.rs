@@ -3,6 +3,8 @@ use std::error::Error;
 use std::sync::{Arc, RwLock};
 
 use crate::error::Never;
+use std::collections::hash_map::Values;
+use std::iter::Cloned;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Secret {
@@ -20,6 +22,7 @@ pub enum SecretType {
 
 pub trait Storage: Send {
     type Error: Error;
+    fn get_all(&self) -> Result<Vec<Secret>, Self::Error>;
     fn get(&self, domain: &str) -> Result<Option<Secret>, Self::Error>;
     fn set(&self, secret: Secret) -> Result<(), Self::Error>;
     fn delete(&self, domain: &str) -> Result<bool, Self::Error>;
@@ -27,6 +30,11 @@ pub trait Storage: Send {
 
 impl Storage for Arc<RwLock<HashMap<String, Secret>>> {
     type Error = Never;
+
+    fn get_all(&self) -> Result<Vec<Secret>, Never> {
+        let lock = self.read().unwrap();
+        Ok(lock.values().cloned().collect())
+    }
 
     fn get(&self, domain: &str) -> Result<Option<Secret>, Never> {
         let lock = self.read().unwrap();

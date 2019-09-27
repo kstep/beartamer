@@ -19,7 +19,7 @@ use hyper::service::{make_service_fn, Service, service_fn_ok};
 use log::{error, warn};
 use r2d2_mongodb::ConnectionOptions;
 
-use crate::error::{Never, ErrorInfo};
+use crate::error::{ErrorInfo, Never};
 use crate::http::{empty_response, json_builder, json_ok};
 use crate::storage::{Secret, Storage};
 
@@ -106,13 +106,19 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
     type Future = Either<FutureResult<Response<Body>, Never>, Box<dyn Future<Item=Response<Body>, Error=Never> + Send>>;
 
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
+        let method = req.method();
         let mut path = req.uri().path().trim_start_matches("/").split("/");
         let domain = match path.next() {
             None => return Either::A(ErrorInfo::new("Domain name missing").resp(StatusCode::BAD_REQUEST)),
             Some(domain) => domain.to_string(),
         };
-        let method = req.method();
         match method {
+            &Method::GET if domain.is_empty() =>
+                Either::A(match self.storage.get_all() {
+                    Ok(values) => json_ok(&values),
+                    Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                        .resp(StatusCode::INTERNAL_SERVER_ERROR),
+                }),
             &Method::GET =>
                 Either::A(match self.storage.get(&domain) {
                     Ok(Some(secret)) => json_ok(&secret),
