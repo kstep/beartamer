@@ -1,11 +1,13 @@
 #[macro_use]
 extern crate serde_derive;
 
+use std::collections::HashMap;
 use std::env::args;
 use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 
 use futures::{future, Future, Stream};
 use futures::future::{Either, FutureResult};
@@ -17,6 +19,8 @@ use log::{error, warn};
 use serde::Serialize;
 
 pub enum Never {}
+
+pub type Storage = HashMap<String, Secret>;
 
 impl fmt::Display for Never {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
@@ -71,18 +75,21 @@ static DEFAULT_BIND: &str = "127.0.0.1:9000";
 
 fn main() {
     let address = {
-        let addr = args().next().unwrap_or_else(|| {
-            warn!("No binding given, using default {}", DEFAULT_BIND);
+        let addr = args().nth(1).unwrap_or_else(|| {
+            eprintln!("No binding given, using default {}", DEFAULT_BIND);
             String::from(DEFAULT_BIND)
         });
         SocketAddr::from_str(&addr).or_else(|err| {
-            warn!("Invalid binding given ({}), using default {}", err, DEFAULT_BIND);
+            eprintln!("Invalid binding given ({}), using default {}", err, DEFAULT_BIND);
             SocketAddr::from_str(DEFAULT_BIND)
         }).unwrap()
     };
 
+    let storage = Arc::new(RwLock::new(HashMap::new()));
     let server = Server::bind(&address)
-        .serve(make_service_fn(|_| future::ok::<_, Never>(SecretService)))
+        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService {
+            storage: storage.clone()
+        })))
         .map_err(|e| error!("Error: {:?}", e));
 
     rt::run(rt::lazy(move || {
@@ -109,7 +116,9 @@ fn json_builder(status: StatusCode) -> Builder {
     builder
 }
 
-pub struct SecretService;
+pub struct SecretService {
+    storage: Arc<RwLock<Storage>>,
+}
 
 impl Service for SecretService {
     type ReqBody = Body;
@@ -126,19 +135,18 @@ impl Service for SecretService {
         let method = req.method();
         match method {
             &Method::GET =>
-                Either::A(json_ok(&Secret {
-                    r#type: SecretType::Password,
-                    domain: domain,
-                    username: "".to_string(),
-                    password: "".to_string(),
-                })),
+                match self.storage.read().unwrap().get(&domain) {
+                    Some(secret) => Either::A(json_ok(secret)),
+                    None => Either::A(ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND)),
+                },
             &Method::PUT | &Method::POST => {
+                let storage = self.storage.clone();
                 let resp = req.into_body()
                     .map_err(|err| {
                         panic!("Error processing request: {}", err);
                     })
                     .concat2()
-                    .and_then(|c| {
+                    .and_then(move |c| {
                         match String::from_utf8(c.to_vec()) {
                             Err(err) =>
                                 ErrorInfo::new(&format!("invalid data: {}", err))
@@ -147,7 +155,10 @@ impl Service for SecretService {
                                 Err(err) =>
                                     ErrorInfo::new(&format!("invalid json: {}", err))
                                         .resp(StatusCode::BAD_REQUEST),
-                                Ok(s) => json_ok(&s),
+                                Ok(secret) => {
+                                    storage.write().unwrap().insert(secret.domain.clone(), secret);
+                                    future::ok(Response::builder().status(StatusCode::NO_CONTENT).body(Body::from("")).unwrap())
+                                }
                             }
                         }
                     });
