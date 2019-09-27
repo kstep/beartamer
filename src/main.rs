@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::env::args;
 use std::error::Error;
 use std::fmt;
+use std::fs::File;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -16,11 +17,11 @@ use hyper::body::Body;
 use hyper::http::response::Builder;
 use hyper::service::{make_service_fn, Service, service_fn_ok};
 use log::{error, warn};
+use r2d2;
+use r2d2_mongodb::ConnectionOptions;
 use serde::Serialize;
 
 pub enum Never {}
-
-pub type Storage = HashMap<String, Secret>;
 
 impl fmt::Display for Never {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result { match *self {} }
@@ -32,7 +33,7 @@ impl fmt::Debug for Never {
 
 impl Error for Never {}
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Secret {
     r#type: SecretType,
     domain: String,
@@ -40,7 +41,7 @@ struct Secret {
     password: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 enum SecretType {
     Password
@@ -72,6 +73,42 @@ impl<'a> ErrorInfo<'a> {
 pub type HttpResponse = Response<Body>;
 
 static DEFAULT_BIND: &str = "127.0.0.1:9000";
+static CONFIG_FILE: &str = "config.json";
+
+#[derive(Deserialize)]
+pub struct DbConfig {
+    host: String,
+    port: u16,
+    dbname: String,
+    username: Option<String>,
+    password: Option<String>,
+    pool_size: u32,
+}
+
+trait Storage: Send {
+    type Error: Error;
+    fn get(&self, domain: &str) -> Result<Option<Secret>, Self::Error>;
+    fn set(&self, secret: Secret) -> Result<(), Self::Error>;
+    fn delete(&self, domain: &str) -> Result<bool, Self::Error>;
+}
+
+impl Storage for Arc<RwLock<HashMap<String, Secret>>> {
+    type Error = Never;
+
+    fn get(&self, domain: &str) -> Result<Option<Secret>, Never> {
+        let lock = self.read().unwrap();
+        Ok(HashMap::get(&lock, domain).cloned())
+    }
+
+    fn set(&self, secret: Secret) -> Result<(), Never> {
+        HashMap::insert(&mut self.write().unwrap(), secret.domain.clone(), secret);
+        Ok(())
+    }
+
+    fn delete(&self, domain: &str) -> Result<bool, Self::Error> {
+        Ok(HashMap::remove(&mut self.write().unwrap(), domain).is_some())
+    }
+}
 
 fn main() {
     let address = {
@@ -85,11 +122,29 @@ fn main() {
         }).unwrap()
     };
 
+    let db_conf: DbConfig = {
+        let file = File::open(CONFIG_FILE).expect("Config file not found");
+        serde_json::from_reader(file).expect("Invalid config format")
+    };
+
+    let conn_mgr = r2d2_mongodb::MongodbConnectionManager::new({
+        let mut opts = ConnectionOptions::builder();
+        opts.with_host(&db_conf.host, db_conf.port)
+            .with_db(&db_conf.dbname);
+        if let (Some(username), Some(password)) = (db_conf.username, db_conf.password) {
+            opts.with_auth(&username, &password);
+        }
+        opts.build()
+    });
+    let pool = r2d2::Pool::builder()
+        .max_size(db_conf.pool_size)
+        .build(conn_mgr)
+        .expect("Pool connection error");
+
     let storage = Arc::new(RwLock::new(HashMap::new()));
+
     let server = Server::bind(&address)
-        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService {
-            storage: storage.clone()
-        })))
+        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService::new(storage.clone()))))
         .map_err(|e| error!("Error: {:?}", e));
 
     rt::run(rt::lazy(move || {
@@ -116,11 +171,23 @@ fn json_builder(status: StatusCode) -> Builder {
     builder
 }
 
-pub struct SecretService {
-    storage: Arc<RwLock<Storage>>,
+pub struct SecretService<S> {
+    storage: S,
 }
 
-impl Service for SecretService {
+impl<S> SecretService<S> {
+    fn new(storage: S) -> Self {
+        SecretService { storage }
+    }
+}
+
+impl Default for SecretService<Arc<RwLock<HashMap<String, Secret>>>> {
+    fn default() -> Self {
+        SecretService::new(Arc::new(RwLock::new(HashMap::new())))
+    }
+}
+
+impl<S: Storage + Clone + 'static> Service for SecretService<S> {
     type ReqBody = Body;
     type ResBody = Body;
     type Error = Never;
@@ -135,10 +202,12 @@ impl Service for SecretService {
         let method = req.method();
         match method {
             &Method::GET =>
-                match self.storage.read().unwrap().get(&domain) {
-                    Some(secret) => Either::A(json_ok(secret)),
-                    None => Either::A(ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND)),
-                },
+                Either::A(match self.storage.get(&domain) {
+                    Ok(Some(secret)) => json_ok(&secret),
+                    Ok(None) => ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND),
+                    Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                        .resp(StatusCode::INTERNAL_SERVER_ERROR),
+                }),
             &Method::PUT | &Method::POST => {
                 let storage = self.storage.clone();
                 let resp = req.into_body()
@@ -156,8 +225,14 @@ impl Service for SecretService {
                                     ErrorInfo::new(&format!("invalid json: {}", err))
                                         .resp(StatusCode::BAD_REQUEST),
                                 Ok(secret) => {
-                                    storage.write().unwrap().insert(secret.domain.clone(), secret);
-                                    future::ok(Response::builder().status(StatusCode::NO_CONTENT).body(Body::from("")).unwrap())
+                                    match storage.set(secret) {
+                                        Ok(()) => future::ok(Response::builder()
+                                            .status(StatusCode::NO_CONTENT)
+                                            .body(Body::from(""))
+                                            .unwrap()),
+                                        Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                                            .resp(StatusCode::INTERNAL_SERVER_ERROR),
+                                    }
                                 }
                             }
                         }
@@ -165,8 +240,13 @@ impl Service for SecretService {
                 Either::B(Box::new(resp))
             }
             &Method::DELETE =>
-                Either::A(ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND)),
-            // json_ok(&ErrorInfo { message: "Domain deleted" }),
+                Either::A(match self.storage.delete(&domain) {
+                    Ok(true) => future::ok(Response::builder().status(StatusCode::NO_CONTENT)
+                        .body(Body::from("")).unwrap()),
+                    Ok(false) => ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND),
+                    Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                        .resp(StatusCode::INTERNAL_SERVER_ERROR),
+                }),
             _ =>
                 Either::A(future::ok(json_builder(StatusCode::METHOD_NOT_ALLOWED)
                     .header("Allow", "GET, POST, PUT, DELETE")
