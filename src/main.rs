@@ -122,7 +122,7 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
                     .next()
                     .map(|p| String::from(&p[10..])))
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| String::from(self.client_addr.to_string()));
+            .unwrap_or_else(|| String::from(self.client_addr.ip().to_string()));
 
         if !device_id.is_empty() {
             let mut devices = self.devices.write().unwrap();

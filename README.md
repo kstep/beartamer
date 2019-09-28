@@ -14,7 +14,7 @@ Supported functions:
 - `DELETE /secrets/:domain` - delete secret by domain name.
 
 Device id is optional, if passed, the quering device will be registered in the system.
-If device id is missing, IP:PORT is stored instead.
+If device id is missing, IP is stored instead.
 
 Data structure:
 
