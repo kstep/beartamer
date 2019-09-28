@@ -13,6 +13,7 @@ use futures::{future, Future, Stream};
 use futures::future::{Either, FutureResult};
 use hyper::{Method, Request, Response, rt, Server, StatusCode};
 use hyper::body::Body;
+use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, Service};
 
 use crate::error::{ErrorInfo, Never};
@@ -71,7 +72,7 @@ fn main() {
     let devices = Arc::new(RwLock::new(Vec::new()));
 
     let server = Server::bind(&address)
-        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService::new(storage.clone(), devices.clone()))))
+        .serve(make_service_fn(move |addr: &AddrStream| future::ok::<_, Never>(SecretService::new(addr.remote_addr(), storage.clone(), devices.clone()))))
         .map_err(|e| panic!("Error: {:?}", e));
 
     rt::run(rt::lazy(move || {
@@ -81,13 +82,14 @@ fn main() {
 }
 
 pub struct SecretService<S> {
+    client_addr: SocketAddr,
     storage: S,
     devices: Arc<RwLock<Vec<String>>>,
 }
 
 impl<S> SecretService<S> {
-    fn new(storage: S, devices: Arc<RwLock<Vec<String>>>) -> Self {
-        SecretService { storage, devices }
+    fn new(client_addr: SocketAddr, storage: S, devices: Arc<RwLock<Vec<String>>>) -> Self {
+        SecretService { client_addr, storage, devices }
     }
 }
 
@@ -107,16 +109,20 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
             Some("devices") => {
                 let devices = self.devices.read().unwrap();
                 return Either::A(json_ok(&*devices));
-            },
+            }
             _ => return Either::A(ErrorInfo::new("API not found").resp(StatusCode::NOT_FOUND)),
         }
 
         let domain = path.next().map_or_else(|| String::from(""), |d| d.to_string());
 
-        let device_id = uri.query().and_then(|qs|
-            qs.split("&").filter(|p| p.starts_with("device_id="))
-                .next().map(|p| String::from(&p[10..]))
-        ).unwrap_or_else(|| String::from(""));
+        let device_id = uri.query()
+            .and_then(|qs|
+                qs.split("&")
+                    .filter(|p| p.starts_with("device_id="))
+                    .next()
+                    .map(|p| String::from(&p[10..])))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| String::from(self.client_addr.to_string()));
 
         if !device_id.is_empty() {
             let mut devices = self.devices.write().unwrap();
