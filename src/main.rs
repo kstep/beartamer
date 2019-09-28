@@ -1,9 +1,8 @@
 #[macro_use]
-extern crate serde_derive;
-#[macro_use]
 extern crate bson;
+#[macro_use]
+extern crate serde_derive;
 
-use std::collections::HashMap;
 use std::env::args;
 use std::fs::File;
 use std::net::SocketAddr;
@@ -18,7 +17,7 @@ use hyper::service::{make_service_fn, Service};
 
 use crate::error::{ErrorInfo, Never};
 use crate::http::{empty_response, json_builder, json_ok};
-use crate::storage::{Secret, Storage, MongoStorage};
+use crate::storage::{MongoStorage, Secret, Storage};
 
 mod http;
 mod error;
@@ -69,9 +68,10 @@ fn main() {
         .expect("Pool connection error");
 
     let storage = MongoStorage::new(pool);
+    let devices = Arc::new(RwLock::new(Vec::new()));
 
     let server = Server::bind(&address)
-        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService::new(storage.clone()))))
+        .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService::new(storage.clone(), devices.clone()))))
         .map_err(|e| panic!("Error: {:?}", e));
 
     rt::run(rt::lazy(move || {
@@ -82,17 +82,12 @@ fn main() {
 
 pub struct SecretService<S> {
     storage: S,
+    devices: Arc<RwLock<Vec<String>>>,
 }
 
 impl<S> SecretService<S> {
-    fn new(storage: S) -> Self {
-        SecretService { storage }
-    }
-}
-
-impl Default for SecretService<Arc<RwLock<HashMap<String, Secret>>>> {
-    fn default() -> Self {
-        SecretService::new(Arc::new(RwLock::new(HashMap::new())))
+    fn new(storage: S, devices: Arc<RwLock<Vec<String>>>) -> Self {
+        SecretService { storage, devices }
     }
 }
 
@@ -104,11 +99,32 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
 
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
         let method = req.method();
-        let mut path = req.uri().path().trim_start_matches("/").split("/");
-        let domain = match path.next() {
-            None => return Either::A(ErrorInfo::new("Domain name missing").resp(StatusCode::BAD_REQUEST)),
-            Some(domain) => domain.to_string(),
-        };
+        let uri = req.uri();
+        let mut path = uri.path().trim_start_matches("/").split("/");
+
+        match path.next() {
+            Some("secrets") => (),
+            Some("devices") => {
+                let devices = self.devices.read().unwrap();
+                return Either::A(json_ok(&*devices));
+            },
+            _ => return Either::A(ErrorInfo::new("API not found").resp(StatusCode::NOT_FOUND)),
+        }
+
+        let domain = path.next().map_or_else(|| String::from(""), |d| d.to_string());
+
+        let device_id = uri.query().and_then(|qs|
+            qs.split("&").filter(|p| p.starts_with("device_id="))
+                .next().map(|p| String::from(&p[10..]))
+        ).unwrap_or_else(|| String::from(""));
+
+        if !device_id.is_empty() {
+            let mut devices = self.devices.write().unwrap();
+            if !devices.contains(&device_id) {
+                devices.push(device_id);
+            }
+        }
+
         match method {
             &Method::GET if domain.is_empty() =>
                 Either::A(match self.storage.get_all() {
