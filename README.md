@@ -1,12 +1,19 @@
 # beartamer
 
-Endpoint: `/:domain`
+Endpoint: `/devices`
 Supported functions:
 
-- `GET /:domain` - get by domain name,
-- `GET /` - get list of all secrets,
-- `PUT /:domain` or `POST /:domain` - insert/update secret,
-- `DELETE /:domain` - delete secret by domain name.
+- `GET /devices` - get all known devices as an array.
+
+Endpoint: `/secrets/:domain?device_id=:device_id`
+Supported functions:
+
+- `GET /secrets/:domain` - get by domain name,
+- `GET /secrets` - get list of all secrets,
+- `PUT /secrets/:domain` or `POST /:domain` - insert/update secret,
+- `DELETE /secrets/:domain` - delete secret by domain name.
+
+Device id is optional, if passed, the quering device will be registered in the system.
 
 Data structure:
 
