@@ -2,8 +2,8 @@ use futures::future::{self, FutureResult};
 use hyper::{Body, Response, StatusCode};
 use hyper::http::response::Builder;
 use serde::Serialize;
+
 use crate::error::Never;
-use std::error::Error;
 
 pub type HttpResponse = Response<Body>;
 

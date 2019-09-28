@@ -4,7 +4,7 @@ use std::fmt;
 use futures::future::FutureResult;
 use hyper::{Body, StatusCode};
 
-use crate::http::{HttpResponse, json, json_ok};
+use crate::http::{HttpResponse, json};
 
 pub enum Never {}
 
@@ -35,9 +35,6 @@ impl<'a> ErrorInfo<'a> {
     }
     pub fn resp(&self, status: StatusCode) -> FutureResult<HttpResponse, Never> {
         json(self, status)
-    }
-    pub fn resp_ok(&self) -> FutureResult<HttpResponse, Never> {
-        json_ok(self)
     }
 }
 

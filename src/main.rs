@@ -1,10 +1,10 @@
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+extern crate bson;
 
 use std::collections::HashMap;
 use std::env::args;
-use std::error::Error;
-use std::fmt;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -14,14 +14,11 @@ use futures::{future, Future, Stream};
 use futures::future::{Either, FutureResult};
 use hyper::{Method, Request, Response, rt, Server, StatusCode};
 use hyper::body::Body;
-use hyper::http::response::Builder;
-use hyper::service::{make_service_fn, Service, service_fn_ok};
-use log::{error, warn};
-use r2d2_mongodb::ConnectionOptions;
+use hyper::service::{make_service_fn, Service};
 
 use crate::error::{ErrorInfo, Never};
 use crate::http::{empty_response, json_builder, json_ok};
-use crate::storage::{Secret, Storage};
+use crate::storage::{Secret, Storage, MongoStorage};
 
 mod http;
 mod error;
@@ -71,11 +68,11 @@ fn main() {
         .build(conn_mgr)
         .expect("Pool connection error");
 
-    let storage = Arc::new(RwLock::new(HashMap::new()));
+    let storage = MongoStorage::new(pool);
 
     let server = Server::bind(&address)
         .serve(make_service_fn(move |_| future::ok::<_, Never>(SecretService::new(storage.clone()))))
-        .map_err(|e| error!("Error: {:?}", e));
+        .map_err(|e| panic!("Error: {:?}", e));
 
     rt::run(rt::lazy(move || {
         rt::spawn(server);
