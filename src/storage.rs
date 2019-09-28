@@ -13,16 +13,26 @@ use mongodb::coll::options::UpdateOptions;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Secret {
-    r#type: SecretType,
     domain: String,
-    username: String,
-    password: String,
+    #[serde(flatten)]
+    r#type: SecretType,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "lowercase", tag = "type")]
 pub enum SecretType {
-    Password
+    Password {
+        username: String,
+        password: String,
+    },
+    CreditCard {
+        fullname: String,
+        number: String,
+        cvc: String,
+        // BSON does not support unsigned integers :-(
+        year: i16,
+        month: i8,
+    },
 }
 
 #[derive(Clone)]

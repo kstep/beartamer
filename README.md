@@ -27,6 +27,18 @@ Data structure:
 }
 ```
 
+```
+{
+  "domain: "string",
+  "number": "1111222233334444",
+  "cvc": "123",
+  "fullname": "Ivan Ivanoff",
+  "year": 2040,
+  "month": 12,
+  "type": "creditcard"
+}
+```
+
 Run `cargo build -- 0.0.0.0:9000` to build.
 Run `cargo run -- 0.0.0.0:9000` to build and run.
 
