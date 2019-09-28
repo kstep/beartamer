@@ -135,14 +135,14 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
             &Method::GET if domain.is_empty() =>
                 Either::A(match self.storage.get_all() {
                     Ok(values) => json_ok(&values),
-                    Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                    Err(err) => ErrorInfo::new(&format!("storage error: {}", err))
                         .resp(StatusCode::INTERNAL_SERVER_ERROR),
                 }),
             &Method::GET =>
                 Either::A(match self.storage.get(&domain) {
                     Ok(Some(secret)) => json_ok(&secret),
                     Ok(None) => ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND),
-                    Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                    Err(err) => ErrorInfo::new(&format!("storage error: {}", err))
                         .resp(StatusCode::INTERNAL_SERVER_ERROR),
                 }),
             &Method::PUT | &Method::POST => {
@@ -164,7 +164,7 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
                                 Ok(secret) => {
                                     match storage.set(secret) {
                                         Ok(()) => empty_response(),
-                                        Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
+                                        Err(err) => ErrorInfo::new(&format!("storage error: {}", err))
                                             .resp(StatusCode::INTERNAL_SERVER_ERROR),
                                     }
                                 }
@@ -176,14 +176,14 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
             &Method::DELETE =>
                 Either::A(match self.storage.delete(&domain) {
                     Ok(true) => empty_response(),
-                    Ok(false) => ErrorInfo::new("Domain not found").resp(StatusCode::NOT_FOUND),
+                    Ok(false) => ErrorInfo::new("domain not found").resp(StatusCode::NOT_FOUND),
                     Err(err) => ErrorInfo::new(&format!("Storage error: {:?}", err))
                         .resp(StatusCode::INTERNAL_SERVER_ERROR),
                 }),
             _ =>
                 Either::A(future::ok(json_builder(StatusCode::METHOD_NOT_ALLOWED)
                     .header("Allow", "GET, POST, PUT, DELETE")
-                    .body(ErrorInfo::new("Method not allowed").body()).unwrap()))
+                    .body(ErrorInfo::new("method not allowed").body()).unwrap()))
         }
     }
 }
