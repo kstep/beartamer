@@ -104,11 +104,7 @@ impl Storage for MongoStorage {
         let doc = to_bson(&secret)?;
         let mut opts = UpdateOptions::new();
         opts.upsert = Some(true);
-        match doc {
-            Bson::Document(doc) =>
-                coll.update_one(doc! { "domain": &secret.domain }, doc, Some(opts)).map(|_| ()),
-            _ => unreachable!(),
-        }
+        coll.update_one(doc! { "domain": &secret.domain }, doc! { "$set": doc }, Some(opts)).map(|_| ())
     }
 
     fn delete(&self, domain: &str) -> Result<bool, Self::Error> {
