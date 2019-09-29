@@ -26,9 +26,21 @@ Supported methods:
 
 - `GET /devices` - get all known devices as an array.
 
-### Endpoint: `/secrets/:domain?device_id=:device_id`
+Data structure:
 
-It is strongly recommended to always pass `device_id` in all requests.
+```json
+[
+  {
+    "device_id": "string",
+    "ip_addrs": [
+      "1.2.3.4",
+      "5.6.7.8"
+    ]
+  }
+]
+```
+
+### Endpoint: `/secrets/:domain?device_id=:device_id`
 
 Supported methods:
 
@@ -37,8 +49,8 @@ Supported methods:
 - `PUT /secrets/:domain` or `POST /secrets/:domain` - insert/update secret,
 - `DELETE /secrets/:domain` - delete secret by domain name.
 
-Device id is optional, if passed, the querying device will be registered in the system.
-If device id is missing, IP is stored instead.
+Device id is optional. If device id is missing, `"unknown"` string is used instead.
+It is strongly recommended to always pass `device_id` in all requests.
 
 Data structure:
 

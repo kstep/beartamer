@@ -3,9 +3,11 @@ extern crate bson;
 #[macro_use]
 extern crate serde_derive;
 
+use std::collections::HashSet;
 use std::env::args;
 use std::fs::File;
-use std::net::SocketAddr;
+use std::hash::{Hash, Hasher};
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -69,7 +71,7 @@ fn main() {
         .expect("Pool connection error");
 
     let storage = MongoStorage::new(pool);
-    let devices = Arc::new(RwLock::new(Vec::new()));
+    let devices = Arc::new(RwLock::new(HashSet::new()));
 
     let server = Server::bind(&address)
         .serve(make_service_fn(move |addr: &AddrStream| future::ok::<_, Never>(SecretService::new(addr.remote_addr(), storage.clone(), devices.clone()))))
@@ -81,14 +83,42 @@ fn main() {
     }));
 }
 
+#[derive(Serialize)]
+pub struct DeviceInfo {
+    device_id: String,
+    ip_addrs: Vec<IpAddr>,
+}
+
+impl DeviceInfo {
+    fn new(device_id: String) -> Self {
+        Self {
+            device_id,
+            ip_addrs: Vec::new(),
+        }
+    }
+}
+
+impl PartialEq for DeviceInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.device_id.eq(&other.device_id)
+    }
+}
+impl Eq for DeviceInfo {}
+
+impl Hash for DeviceInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.device_id.hash(state);
+    }
+}
+
 pub struct SecretService<S> {
     client_addr: SocketAddr,
     storage: S,
-    devices: Arc<RwLock<Vec<String>>>,
+    devices: Arc<RwLock<HashSet<DeviceInfo>>>,
 }
 
 impl<S> SecretService<S> {
-    fn new(client_addr: SocketAddr, storage: S, devices: Arc<RwLock<Vec<String>>>) -> Self {
+    fn new(client_addr: SocketAddr, storage: S, devices: Arc<RwLock<HashSet<DeviceInfo>>>) -> Self {
         SecretService { client_addr, storage, devices }
     }
 }
@@ -109,7 +139,7 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
             Some("devices") => {
                 let devices = self.devices.read().unwrap();
                 return Either::A(json_ok(&*devices));
-            }
+            },
             _ => return Either::A(ErrorInfo::new("API not found").resp(StatusCode::NOT_FOUND)),
         }
 
@@ -122,13 +152,19 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
                     .next()
                     .map(|p| String::from(&p[10..])))
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| String::from(self.client_addr.ip().to_string()));
+            .unwrap_or_else(|| String::from("unknown"));
 
         if !device_id.is_empty() {
+            let client_ip = self.client_addr.ip();
             let mut devices = self.devices.write().unwrap();
-            if !devices.contains(&device_id) {
-                devices.push(device_id);
+            let mut device_info = {
+                let device_info = DeviceInfo::new(device_id);
+                devices.take(&device_info).unwrap_or(device_info)
+            };
+            if !device_info.ip_addrs.contains(&client_ip) {
+                device_info.ip_addrs.push(client_ip);
             }
+            devices.insert(device_info);
         }
 
         match method {
