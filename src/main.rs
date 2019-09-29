@@ -83,9 +83,10 @@ fn main() {
     }));
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DeviceInfo {
     device_id: String,
+    #[serde(skip_deserializing)]
     ip_addrs: Vec<IpAddr>,
 }
 
@@ -145,27 +146,17 @@ impl<S: Storage + Clone + 'static> Service for SecretService<S> {
 
         let domain = path.next().map_or_else(|| String::from(""), |d| d.to_string());
 
-        let device_id = uri.query()
-            .and_then(|qs|
-                qs.split("&")
-                    .filter(|p| p.starts_with("device_id="))
-                    .next()
-                    .map(|p| String::from(&p[10..])))
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| String::from("unknown"));
-
-        if !device_id.is_empty() {
-            let client_ip = self.client_addr.ip();
-            let mut devices = self.devices.write().unwrap();
-            let mut device_info = {
-                let device_info = DeviceInfo::new(device_id);
-                devices.take(&device_info).unwrap_or(device_info)
-            };
-            if !device_info.ip_addrs.contains(&client_ip) {
-                device_info.ip_addrs.push(client_ip);
-            }
-            devices.insert(device_info);
+        let mut devices = self.devices.write().unwrap();
+        let mut device_info = {
+            let device_info = serde_urlencoded::from_str::<DeviceInfo>(uri.query().unwrap_or(""))
+                .unwrap_or_else(|_| DeviceInfo::new(String::from("unknown")));
+            devices.take(&device_info).unwrap_or(device_info)
+        };
+        let client_ip = self.client_addr.ip();
+        if !device_info.ip_addrs.contains(&client_ip) {
+            device_info.ip_addrs.push(client_ip);
         }
+        devices.insert(device_info);
 
         match method {
             &Method::GET if domain.is_empty() =>
